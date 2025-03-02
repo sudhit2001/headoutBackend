@@ -9,4 +9,5 @@ urlpatterns = [
     path("submit_answer", views.submit_answer),
     path("challenge_friend", views.challenge_friend),
     path("check_token", views.check),
+    path("invite", views.invite),
 ]

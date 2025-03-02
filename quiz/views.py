@@ -11,6 +11,7 @@ from django.core.cache import cache  # Redis cache
 from quiz.models import User  # Make sure your User model is ORM-compatible
 from pymongo import MongoClient
 import redis
+from django.db import IntegrityError
 import os
 from django.db import transaction
 from django.shortcuts import reverse
@@ -190,15 +191,15 @@ def login(request):
 # 🔹 Fetch Next Question
 @api_view(["GET"])
 def next_question(request):
-    authfromheader = request.headers.get("Authorization")
+    # authfromheader = request.headers.get("Authorization")
 
-    if not authfromheader:
-        authfromheader = request.query_params.get("token") 
+    # if not authfromheader:
+    #     authfromheader = request.query_params.get("token") 
 
-    user = check_token(authfromheader)
+    # user = check_token(authfromheader)
 
-    if not user:
-        return Response({"error": "Unauthorized"}, status=401)
+    # if not user:
+    #     return Response({"error": "Unauthorized"}, status=401)
 
     pointer = int(redis_client.get('global_pointer') or 0)  # Default to 0
 
@@ -228,12 +229,12 @@ def next_question(request):
 # 🔹 Validate Answer & Update Score
 @api_view(["POST"])
 def submit_answer(request):
-    authfromheader = request.headers.get("Authorization")
-    if not authfromheader:
-        authfromheader = request.data.get("token") 
-    username = check_token(authfromheader)
-    if not username:
-        return Response({"error": "Unauthorized"}, status=401)
+    # authfromheader = request.headers.get("Authorization")
+    # if not authfromheader:
+    #     authfromheader = request.data.get("token") 
+    # username = check_token(authfromheader)
+    # if not username:
+    #     return Response({"error": "Unauthorized"}, status=401)
 
     pointer = int(request.data.get("pointer", -1))
     selected_answer = request.data.get("answer")
@@ -251,36 +252,41 @@ def submit_answer(request):
     fun_fact = random.choice(destination["trivia"])
 
     # Fetch user from Redis
-    user_key = f"user:{username}"
-    correct = int(redis_client.hget(user_key, "correct_answers") or 0)  # ✅ Ensure it's an int
-    incorrect = int(redis_client.hget(user_key, "incorrect_answers") or 0)
+    # user_key = f"user:{username}"
+    # correct = int(redis_client.hget(user_key, "correct_answers") or 0)  # ✅ Ensure it's an int
+    # incorrect = int(redis_client.hget(user_key, "incorrect_answers") or 0)
 
-    try:
-        with transaction.atomic():  # Ensures DB consistency
-            user, created = User.objects.get_or_create(username=username)
+    # try:
+    #     with transaction.atomic():  # Ensures DB consistency
+    #         user, created = User.objects.get_or_create(username=username)
             
-            if selected_answer == correct_answer:
-                correct += 1
-                user.correct_answers += 1
-                response = {"result": "Correct ✅", "fun_fact": fun_fact}
-            else:
-                incorrect += 1
-                user.incorrect_answers += 1
-                response = {"result": "Incorrect ❌", "fun_fact": fun_fact}
+    #         if selected_answer == correct_answer:
+    #             correct += 1
+    #             user.correct_answers += 1
+    #             response = {"result": "Correct ✅", "fun_fact": fun_fact}
+    #         else:
+    #             incorrect += 1
+    #             user.incorrect_answers += 1
+    #             response = {"result": "Incorrect ❌", "fun_fact": fun_fact}
 
-            # Update Redis
-            redis_client.hset(user_key, "correct_answers", str(correct))
-            redis_client.hset(user_key, "incorrect_answers", str(incorrect))
+    #         # Update Redis
+    #         redis_client.hset(user_key, "correct_answers", str(correct))
+    #         redis_client.hset(user_key, "incorrect_answers", str(incorrect))
 
-            # Save to SQLite
-            response.update({
-                "correct_answers": user.correct_answers,
-                "incorrect_answers": user.incorrect_answers
-            })
-            user.save()
+    #         # Save to SQLite
+    #         response.update({
+    #             "correct_answers": user.correct_answers,
+    #             "incorrect_answers": user.incorrect_answers
+    #         })
+    #         user.save()
 
-    except Exception as e:
-        return Response({"error": "Database update failed", "details": str(e)}, status=500)
+    # except Exception as e:
+    #     return Response({"error": "Database update failed", "details": str(e)}, status=500)
+
+    if selected_answer == correct_answer:
+        response = {"result": "Correct ✅", "fun_fact": fun_fact}
+    else:
+        response = {"result": "Incorrect ❌", "fun_fact": fun_fact}
 
     return Response(response)
 
@@ -330,3 +336,50 @@ def challenge_friend(request):
         "whatsapp_link": whatsapp_link,
         "invite_url": invite_url
     })
+
+@api_view(["POST"])
+def invite(request):
+    username = request.data.get("username")
+    correct_answers = request.data.get("correct_answers")
+    incorrect_answers = request.data.get("incorrect_answers")
+
+    if not username or correct_answers is None or incorrect_answers is None:
+        return Response({"error": "Username, correct_answers, and incorrect_answers are required"}, status=400)
+
+    # Try to fetch user from the database
+    user = None
+    try:
+        user = User.objects.get(username=username)  # Assuming you have a User model for storing scores
+    except User.DoesNotExist:
+        # If user doesn't exist, create new user entry
+        try:
+            user = User(username=username, correct_answers=correct_answers, incorrect_answers=incorrect_answers)
+            user.save()
+        except IntegrityError:
+            return Response({"error": "Username already exists in the database."}, status=400)
+
+    # Update user score in the database
+    if user:
+        user.correct_answers = correct_answers
+        user.incorrect_answers = incorrect_answers
+        user.save()
+
+        # Update scores in Redis as well
+        redis_client.hset(f"user:{username}", "correct_answers", correct_answers)
+        redis_client.hset(f"user:{username}", "incorrect_answers", incorrect_answers)
+
+    # Generate updated inviter's score
+    inviter_score = f"Correct: {correct_answers} | Incorrect: {incorrect_answers}"
+    invite_url = f"http://localhost:3000"
+
+    # Generate WhatsApp link with the invite message (note that the link will be the same as before)
+    invite_message = f"Hey! {username} just updated their travel quiz score! {inviter_score}. He is inviting you for a challenge! {invite_url}"
+    whatsapp_link = f"https://wa.me/?text={urllib.parse.quote(invite_message)}"
+
+    # Return response with the generated WhatsApp link and invite URL
+    return Response({
+        "message": "Scores updated successfully",
+        "whatsapp_link": whatsapp_link,
+        "invite_url": invite_url
+    })
+
